@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dexter-relay"
+version = "0.1.0"
+description = "UDP force-vector relay for Dexter load-cell measurements."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Immersive AI Systems" }
+]
+dependencies = []
+
+[project.scripts]
+dexter-relay-server = "dexter_relay.server:main"
+dexter-relay-client = "dexter_relay.client:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
