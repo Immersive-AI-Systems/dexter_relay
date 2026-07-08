@@ -10,7 +10,7 @@ This is pure Python. The .NET visualizer is used only as a reference source for 
 python -m pip install -e .
 ```
 
-The relay assumes `dexter_controller` is already installed in the active Python environment.
+This also installs `dexter-controller` directly from `github.com/fchampalimaud/dexter-controller`, using the `python/dexter-controller` package subdirectory.
 
 ## Run the relay
 
@@ -55,6 +55,12 @@ python -m dexter_relay.client --host 127.0.0.1 --port 45678
 ```
 
 The client sends a UDP subscribe packet, receives the full stream, and prints the latest force values once per second. On Ctrl+C it sends a best-effort UDP `unsubscribe` packet so the relay can remove it immediately.
+
+## Unity Receiver Demo
+
+A minimal Unity receiver is included in [`unity_demo`](unity_demo/README.md). It is a drop-in asset folder with a single `DexterRelayUdpReceiver` component that subscribes to the relay, receives force frames, displays a simple on-screen overlay, and sends `unsubscribe` on shutdown.
+
+Use `127.0.0.1` when Unity runs on the relay machine. Use the relay machine's LAN IP address when Unity runs on another computer.
 
 ## Local smoke test without hardware
 

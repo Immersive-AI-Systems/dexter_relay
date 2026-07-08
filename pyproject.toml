@@ -7,12 +7,14 @@ name = "dexter-relay"
 version = "0.1.0"
 description = "UDP force-vector relay for Dexter load-cell measurements."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
   { name = "Immersive AI Systems" }
 ]
-dependencies = []
+dependencies = [
+  "dexter-controller @ git+https://github.com/fchampalimaud/dexter-controller.git#subdirectory=python/dexter-controller",
+]
 
 [project.scripts]
 dexter-relay-server = "dexter_relay.server:main"
