@@ -7,6 +7,7 @@ import socket
 import time
 from typing import Any
 
+from .port_util import bind_udp_socket
 from .protocol import (
     DEFAULT_UDP_PORT,
     MAX_DATAGRAM_BYTES,
@@ -17,6 +18,10 @@ from .protocol import (
     is_unsubscribe_packet,
 )
 from .source import DexterForceSource, ForceSource, SimulatedForceSource
+
+
+_RECV_TIMEOUT_S = 0.01
+_SEND_BUFFER_BYTES = 256 * 1024
 
 
 class UdpRelayServer:
@@ -41,36 +46,61 @@ class UdpRelayServer:
         self.client_ttl_s = client_ttl_s
         self._clients: dict[tuple[str, int], float] = {}
         self._sequence = 0
+        self._last_published_ble_sequence: int | None = None
 
     def serve_forever(self) -> None:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.bind((self.bind_host, self.port))
-            sock.setblocking(False)
+        sock = bind_udp_socket(self.bind_host, self.port)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, _SEND_BUFFER_BYTES)
+            # Use a short recv timeout instead of a fully non-blocking socket.
+            # On Windows, non-blocking UDP sendto to remote clients often raises
+            # WSAEWOULDBLOCK (10035) even when the send buffer has space.
+            sock.settimeout(_RECV_TIMEOUT_S)
             print(
                 f"dexter-relay server listening on {self.bind_host}:{self.port} "
                 f"({self.source.transport}, {1.0 / self.send_interval_s:.1f} Hz)"
             )
 
-            next_publish = time.monotonic()
+            next_publish = time.perf_counter()
             while True:
                 self._receive_subscriptions(sock)
 
-                now = time.monotonic()
+                now = time.perf_counter()
                 if now >= next_publish:
                     self._publish(sock)
                     next_publish += self.send_interval_s
                     if next_publish < now:
                         next_publish = now + self.send_interval_s
 
-                sleep_for = min(0.01, max(0.0, next_publish - time.monotonic()))
-                if sleep_for:
-                    time.sleep(sleep_for)
+                sleep_for = next_publish - time.perf_counter()
+                if sleep_for > 0.002:
+                    time.sleep(sleep_for - 0.001)
+                elif sleep_for > 0:
+                    while time.perf_counter() < next_publish:
+                        pass
+        finally:
+            sock.close()
+
+    def _sendto(
+        self, sock: socket.socket, data: bytes, address: tuple[str, int]
+    ) -> bool:
+        try:
+            sock.sendto(data, address)
+            return True
+        except BlockingIOError:
+            return False
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror == 10035:
+                return False
+            print(f"failed sending to {address[0]}:{address[1]}: {exc}")
+            return False
 
     def _receive_subscriptions(self, sock: socket.socket) -> None:
         while True:
             try:
                 data, address = sock.recvfrom(MAX_DATAGRAM_BYTES)
-            except BlockingIOError:
+            except TimeoutError:
                 return
 
             try:
@@ -106,12 +136,20 @@ class UdpRelayServer:
             "request_client": request.get("client"),
             "request_client_id": request.get("client_id"),
         }
-        sock.sendto(encode_datagram(ack), address)
+        self._sendto(sock, encode_datagram(ack), address)
 
     def _publish(self, sock: socket.socket) -> None:
         self._expire_clients()
 
         snapshot = self.source.read_snapshot()
+        if snapshot.get("transport") == "ble":
+            ble_status = snapshot.get("status", {}).get("ble", {})
+            sample_sequence = ble_status.get("sample_sequence")
+            if sample_sequence is not None:
+                if sample_sequence == self._last_published_ble_sequence:
+                    return
+                self._last_published_ble_sequence = sample_sequence
+
         self._sequence += 1
         frame = {
             "type": "force",
@@ -125,10 +163,7 @@ class UdpRelayServer:
         data = encode_datagram(frame)
 
         for address in list(self._clients):
-            try:
-                sock.sendto(data, address)
-            except OSError as exc:
-                print(f"failed sending to {address[0]}:{address[1]}: {exc}")
+            self._sendto(sock, data, address)
 
     def _expire_clients(self) -> None:
         now = time.monotonic()
@@ -151,8 +186,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--send-hz",
         type=float,
-        default=100.0,
-        help="force-frame publish rate",
+        default=20.0,
+        help="force-frame publish rate; in BLE mode also downsamples device samples to this rate",
     )
     parser.add_argument(
         "--client-ttl",
@@ -180,8 +215,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ble-scan-timeout",
         type=float,
-        default=1.0,
-        help="BLE scan timeout in seconds",
+        default=5.0,
+        help="BLE scan timeout in seconds per connection attempt",
+    )
+    parser.add_argument(
+        "--ble-connect-retries",
+        type=int,
+        default=3,
+        help="number of BLE connection attempts before failing",
+    )
+    parser.add_argument(
+        "--ble-address",
+        default=None,
+        help=(
+            "Dexter BLE MAC address (AA:BB:CC:DD:EE:FF) used to detect when "
+            "Windows Bluetooth is already connected to the device"
+        ),
     )
     parser.add_argument(
         "--simulate",
@@ -219,6 +268,9 @@ def main(argv: list[str] | None = None) -> int:
                 mapping_specs=args.map,
                 use_ble=use_ble,
                 ble_scan_timeout=args.ble_scan_timeout,
+                ble_connect_retries=args.ble_connect_retries,
+                ble_address=args.ble_address,
+                ble_sample_hz=args.send_hz if use_ble else None,
             )
         except Exception as exc:
             parser.exit(2, f"error: {exc}\n")

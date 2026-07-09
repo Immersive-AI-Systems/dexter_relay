@@ -7,7 +7,7 @@ name = "dexter-relay"
 version = "0.1.0"
 description = "UDP force-vector relay for Dexter load-cell measurements."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 license = { file = "LICENSE" }
 authors = [
   { name = "Immersive AI Systems" }
@@ -22,3 +22,15 @@ dexter-relay-client = "dexter_relay.client:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[tool.pixi.dependencies]
+python = "3.13.*"
+
+[tool.pixi.pypi-dependencies]
+dexter-relay = { path = ".", editable = true }
+
+[tool.pixi.tasks]

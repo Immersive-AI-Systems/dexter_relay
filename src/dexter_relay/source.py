@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 
+from .ble_support import (
+    diagnose_ble_failure,
+    prepare_dexter_ble_sync,
+)
 from .conversion import compose_force, signed_int16_values
 
 
@@ -106,6 +112,53 @@ def _force_measurement(
     }
 
 
+def _connect_ble_device(
+    *,
+    scan_timeout: float,
+    retries: int,
+    ble_address: str | None = None,
+):
+    """Connect to Dexter over BLE, retrying when advertising is intermittent."""
+
+    from .ble_device import RelayBLELoadCellDevice
+
+    if retries < 1:
+        raise ValueError("ble_connect_retries must be at least 1")
+
+    resolved_address = prepare_dexter_ble_sync(
+        ble_address=ble_address,
+        discovery_timeout=scan_timeout,
+    )
+
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        if attempt > 1:
+            prepare_dexter_ble_sync(
+                ble_address=resolved_address or ble_address,
+                discovery_timeout=scan_timeout,
+            )
+        try:
+            device = RelayBLELoadCellDevice(
+                scan_timeout=scan_timeout,
+                ble_address=resolved_address or ble_address,
+            )
+            return device
+        except Exception as exc:
+            last_error = exc
+            if attempt < retries:
+                time.sleep(min(1.0, scan_timeout * 0.2))
+
+    message = asyncio.run(
+        diagnose_ble_failure(
+            address=resolved_address,
+            scan_timeout=scan_timeout,
+            retries=retries,
+            last_error=last_error,
+        )
+    )
+    raise RuntimeError(message) from last_error
+
+
 class DexterForceSource:
     """Force source backed by the `dexter_controller` package.
 
@@ -126,7 +179,10 @@ class DexterForceSource:
         *,
         mapping_specs: Sequence[str] | None = None,
         use_ble: bool = False,
-        ble_scan_timeout: float = 1.0,
+        ble_scan_timeout: float = 5.0,
+        ble_connect_retries: int = 3,
+        ble_address: str | None = None,
+        ble_sample_hz: float | None = None,
     ) -> None:
         self.transport = "ble" if use_ble else "serial"
         self._controller = None
@@ -137,6 +193,13 @@ class DexterForceSource:
         self._ble_last_update_ts = {name: 0.0 for name in FINGER_NAMES}
         self._ble_counter: int | None = None
         self._ble_timestamp_us: int | None = None
+        self._ble_sample_sequence = 0
+        self._ble_lock = threading.Lock()
+        self._ble_stop_event = threading.Event()
+        self._ble_sampler_thread: threading.Thread | None = None
+        if ble_sample_hz is not None and ble_sample_hz <= 0:
+            raise ValueError("ble_sample_hz must be greater than 0")
+        self._ble_sample_hz = ble_sample_hz
 
         if use_ble:
             try:
@@ -146,7 +209,18 @@ class DexterForceSource:
                     "dexter_controller is not installed in this Python environment"
                 ) from exc
 
-            self._device = BLELoadCellDevice(scan_timeout=ble_scan_timeout)
+            self._device = _connect_ble_device(
+                scan_timeout=ble_scan_timeout,
+                retries=ble_connect_retries,
+                ble_address=ble_address,
+            )
+            if self._ble_sample_hz is not None:
+                self._ble_sampler_thread = threading.Thread(
+                    target=self._ble_sampler_loop,
+                    name="dexter-relay-ble-sampler",
+                    daemon=True,
+                )
+                self._ble_sampler_thread.start()
         else:
             try:
                 from dexter_controller import DexterHandController, Finger
@@ -201,17 +275,23 @@ class DexterForceSource:
 
     def _read_ble_snapshot(self) -> dict[str, Any]:
         now = time.time()
-        self._drain_ble_events(now)
+        if self._ble_sample_hz is None:
+            self._drain_ble_events(now)
 
-        fingers = {
-            name: _force_measurement(
-                self._ble_raw_by_name[name],
-                has_data=self._ble_has_data[name],
-                last_update_ts=self._ble_last_update_ts[name],
-                now=now,
-            )
-            for name in FINGER_NAMES
-        }
+        with self._ble_lock:
+            fingers = {
+                name: _force_measurement(
+                    self._ble_raw_by_name[name],
+                    has_data=self._ble_has_data[name],
+                    last_update_ts=self._ble_last_update_ts[name],
+                    now=now,
+                )
+                for name in FINGER_NAMES
+            }
+            ble_counter = self._ble_counter
+            ble_timestamp_us = self._ble_timestamp_us
+            ble_sample_hz = self._ble_sample_hz
+            ble_sample_sequence = self._ble_sample_sequence
 
         identifier = getattr(self._device, "identifier", "BLE:Dexter")
         return {
@@ -229,19 +309,21 @@ class DexterForceSource:
                     for name in FINGER_NAMES
                 },
                 "ble": {
-                    "counter": self._ble_counter,
-                    "timestamp_us": self._ble_timestamp_us,
+                    "counter": ble_counter,
+                    "timestamp_us": ble_timestamp_us,
+                    "sample_hz": ble_sample_hz,
+                    "sample_sequence": ble_sample_sequence,
                     "finger_order": "DexterController.Visualizer",
                 },
             },
         }
 
-    def _drain_ble_events(self, now: float) -> None:
-        for event in self._device.get_events():
-            payload = list(getattr(event, "payload", ()) or ())
-            if len(payload) < 15:
-                continue
+    def _apply_ble_event(self, event: Any, now: float) -> None:
+        payload = list(getattr(event, "payload", ()) or ())
+        if len(payload) < 15:
+            return
 
+        with self._ble_lock:
             for name, raw in visualizer_ble_finger_slices(payload).items():
                 self._ble_raw_by_name[name] = raw
                 self._ble_has_data[name] = True
@@ -249,8 +331,42 @@ class DexterForceSource:
 
             self._ble_counter = getattr(event, "counter", None)
             self._ble_timestamp_us = getattr(event, "timestamp_us", None)
+            self._ble_sample_sequence += 1
+
+    def _ble_sampler_loop(self) -> None:
+        assert self._ble_sample_hz is not None
+        interval_s = 1.0 / self._ble_sample_hz
+        next_tick = time.monotonic()
+
+        while not self._ble_stop_event.is_set():
+            now_mono = time.monotonic()
+            if now_mono >= next_tick:
+                if self._accept_latest_ble_event(time.time()):
+                    next_tick += interval_s
+                    if next_tick < now_mono:
+                        next_tick = now_mono + interval_s
+
+            sleep_for = min(0.001, max(0.0, next_tick - time.monotonic()))
+            if sleep_for:
+                time.sleep(sleep_for)
+
+    def _accept_latest_ble_event(self, now: float) -> bool:
+        events = list(self._device.get_events())
+        if not events:
+            return False
+
+        self._apply_ble_event(events[-1], now)
+        return True
+
+    def _drain_ble_events(self, now: float) -> None:
+        for event in self._device.get_events():
+            self._apply_ble_event(event, now)
 
     def close(self) -> None:
+        self._ble_stop_event.set()
+        if self._ble_sampler_thread is not None:
+            self._ble_sampler_thread.join(timeout=2.0)
+            self._ble_sampler_thread = None
         if self._controller is not None:
             self._controller.close()
         if self._device is not None:

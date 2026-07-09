@@ -32,7 +32,7 @@ Serial devices use one `--map PORT:finger[,finger]` entry per load-cell device:
 python -m dexter_relay.server --serial --map COM20:thumb,index --map COM5:middle,ring --map COM8:pinky
 ```
 
-By default the relay binds UDP `0.0.0.0:45678`, publishes at 100 Hz, and forgets clients that stop renewing their subscription for 5 seconds. The default bind address is network-visible, so clients on other machines can subscribe using the server machine's IP address.
+By default the relay binds UDP `0.0.0.0:45678`, publishes at 20 Hz, downsamples BLE input to the same rate, and forgets clients that stop renewing their subscription for 5 seconds. The default bind address is network-visible, so clients on other machines can subscribe using the server machine's IP address.
 
 On Windows, `45678/udp` is intentionally unprivileged, below the usual Windows dynamic port range, and away from common service ports. Windows Defender Firewall may still prompt the first time Python accepts inbound UDP; allow it on the intended private network.
 
