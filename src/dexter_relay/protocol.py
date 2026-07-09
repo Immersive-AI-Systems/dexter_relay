@@ -10,6 +10,7 @@ from typing import Any, Mapping
 PROTOCOL_VERSION = 1
 MAX_DATAGRAM_BYTES = 65535
 DEFAULT_UDP_PORT = 45678
+FINGER_NAMES = ("thumb", "index", "middle", "ring", "pinky")
 
 
 def encode_datagram(payload: Mapping[str, Any]) -> bytes:

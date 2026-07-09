@@ -12,8 +12,11 @@ license = { file = "LICENSE" }
 authors = [
   { name = "Immersive AI Systems" }
 ]
-dependencies = [
-  "dexter-controller @ git+https://github.com/fchampalimaud/dexter-controller.git#subdirectory=python/dexter-controller",
+dependencies = []
+
+[project.optional-dependencies]
+server = [
+  "dexter-controller",
 ]
 
 [project.scripts]
@@ -25,12 +28,30 @@ where = ["src"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
+platforms = ["win-64", "linux-64"]
+
+[tool.pixi.environments]
+default = { features = ["server"], solve-group = "server" }
+client = { features = ["client"], solve-group = "client" }
+
+[tool.pixi.feature.server]
 platforms = ["win-64"]
 
-[tool.pixi.dependencies]
+[tool.pixi.feature.server.dependencies]
 python = "3.13.*"
 
-[tool.pixi.pypi-dependencies]
+[tool.pixi.feature.server.pypi-dependencies]
+dexter-relay = { path = ".", editable = true }
+dexter-controller = { path = "../dexter-controller/python/dexter-controller", editable = true }
+
+[tool.pixi.feature.client]
+platforms = ["linux-64", "win-64"]
+
+[tool.pixi.feature.client.dependencies]
+python = "3.13.*"
+
+[tool.pixi.feature.client.pypi-dependencies]
 dexter-relay = { path = ".", editable = true }
 
-[tool.pixi.tasks]
+[tool.pixi.feature.client.tasks]
+run-client = "python -m dexter_relay.client"

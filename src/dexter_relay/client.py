@@ -4,19 +4,47 @@ from __future__ import annotations
 
 import argparse
 import socket
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Sequence
 
 from .protocol import (
     DEFAULT_UDP_PORT,
+    FINGER_NAMES,
     MAX_DATAGRAM_BYTES,
     decode_datagram,
     encode_datagram,
     make_subscribe_packet,
     make_unsubscribe_packet,
 )
-from .source import FINGER_NAMES
+
+
+def default_relay_host() -> str:
+    """Pick a relay host that works from WSL as well as native Windows/Linux."""
+
+    if sys.platform != "linux":
+        return "127.0.0.1"
+
+    try:
+        version = Path("/proc/version").read_text(encoding="utf-8").lower()
+    except OSError:
+        return "127.0.0.1"
+    if "microsoft" not in version:
+        return "127.0.0.1"
+
+    try:
+        for line in Path("/etc/resolv.conf").read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line.startswith("nameserver "):
+                continue
+            host = line.split()[1]
+            if host and host not in {"127.0.0.1", "127.0.0.53"}:
+                return host
+    except (OSError, IndexError):
+        pass
+    return "127.0.0.1"
 
 
 def format_vector(values: Sequence[float]) -> str:
@@ -51,7 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Subscribe to a dexter-relay UDP stream and print force values."
     )
-    parser.add_argument("--host", default="127.0.0.1", help="relay server host")
+    parser.add_argument(
+        "--host",
+        default=default_relay_host(),
+        help="relay server host (defaults to the Windows host IP when run in WSL)",
+    )
     parser.add_argument(
         "--port",
         type=int,

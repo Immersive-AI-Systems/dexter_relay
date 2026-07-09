@@ -14,9 +14,7 @@ from .ble_support import (
     prepare_dexter_ble_sync,
 )
 from .conversion import compose_force, signed_int16_values
-
-
-FINGER_NAMES = ("thumb", "index", "middle", "ring", "pinky")
+from .protocol import FINGER_NAMES
 VISUALIZER_BLE_OFFSETS = {
     "thumb": 12,
     "index": 9,
