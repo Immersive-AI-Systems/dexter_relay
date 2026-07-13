@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import socket
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -34,15 +35,19 @@ def default_relay_host() -> str:
     if "microsoft" not in version:
         return "127.0.0.1"
 
+    # WSL's /etc/resolv.conf nameserver (often 10.255.255.254) is a DNS proxy,
+    # not the Windows host for general UDP. The default-route gateway is.
     try:
-        for line in Path("/etc/resolv.conf").read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line.startswith("nameserver "):
-                continue
-            host = line.split()[1]
-            if host and host not in {"127.0.0.1", "127.0.0.53"}:
-                return host
-    except (OSError, IndexError):
+        output = subprocess.check_output(
+            ["ip", "route", "show", "default"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[0] == "default" and parts[1] == "via":
+                return parts[2]
+    except (subprocess.CalledProcessError, FileNotFoundError, IndexError):
         pass
     return "127.0.0.1"
 
