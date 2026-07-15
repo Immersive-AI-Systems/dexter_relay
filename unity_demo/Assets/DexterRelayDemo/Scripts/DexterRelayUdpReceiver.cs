@@ -22,6 +22,8 @@ public class DexterRelayForceFrame
     public int version;
     public long sequence;
     public string transport;
+    public string measurement_kind;
+    public string units;
     public DexterRelayFingers fingers;
 }
 
@@ -111,12 +113,14 @@ public class DexterRelayUdpReceiver : MonoBehaviour
         }
 
         string freshness = HasRecentFrame ? "live" : "stale";
-        GUILayout.Label($"seq={LatestFrame.sequence} transport={LatestFrame.transport} status={freshness}");
-        DrawFingerLine("Thumb", GetFinger(DexterRelayFinger.Thumb));
-        DrawFingerLine("Index", GetFinger(DexterRelayFinger.Index));
-        DrawFingerLine("Middle", GetFinger(DexterRelayFinger.Middle));
-        DrawFingerLine("Ring", GetFinger(DexterRelayFinger.Ring));
-        DrawFingerLine("Pinky", GetFinger(DexterRelayFinger.Pinky));
+        string kind = string.IsNullOrEmpty(LatestFrame.measurement_kind) ? "force" : LatestFrame.measurement_kind;
+        string units = string.IsNullOrEmpty(LatestFrame.units) ? "N" : LatestFrame.units;
+        GUILayout.Label($"seq={LatestFrame.sequence} transport={LatestFrame.transport} measurement={kind} status={freshness}");
+        DrawFingerLine("Thumb", GetFinger(DexterRelayFinger.Thumb), units);
+        DrawFingerLine("Index", GetFinger(DexterRelayFinger.Index), units);
+        DrawFingerLine("Middle", GetFinger(DexterRelayFinger.Middle), units);
+        DrawFingerLine("Ring", GetFinger(DexterRelayFinger.Ring), units);
+        DrawFingerLine("Pinky", GetFinger(DexterRelayFinger.Pinky), units);
         GUILayout.EndArea();
     }
 
@@ -303,7 +307,7 @@ public class DexterRelayUdpReceiver : MonoBehaviour
         return "{\"type\":\"" + type + "\",\"version\":1,\"client\":\"unity-demo\",\"client_id\":\"" + clientId + "\"}";
     }
 
-    private static void DrawFingerLine(string label, DexterRelayFingerMeasurement measurement)
+    private static void DrawFingerLine(string label, DexterRelayFingerMeasurement measurement, string units)
     {
         if (measurement == null || !measurement.has_data)
         {
@@ -311,7 +315,7 @@ public class DexterRelayUdpReceiver : MonoBehaviour
             return;
         }
 
-        GUILayout.Label($"{label}: force={FormatVector(measurement.force)} N raw={FormatVector(measurement.raw)}");
+        GUILayout.Label($"{label}: vector={FormatVector(measurement.force)} {units} raw={FormatVector(measurement.raw)}");
     }
 
     private static string FormatVector(float[] values)

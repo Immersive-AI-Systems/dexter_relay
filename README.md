@@ -32,6 +32,37 @@ Serial devices use one `--map PORT:finger[,finger]` entry per load-cell device:
 python -m dexter_relay.server --serial --map COM20:thumb,index --map COM5:middle,ring --map COM8:pinky
 ```
 
+### iPad touch input
+
+Use `--ipad` to receive target-relative XY positions from the Dexter Touch iPad
+app instead of opening Dexter BLE or serial hardware:
+
+```bash
+python -m dexter_relay.server --ipad
+```
+
+The relay listens for iPad protocol-v2 packets on `0.0.0.0:5005` and continues
+serving relay subscribers on `0.0.0.0:45678`. These are separate UDP ports. The
+iPad app should therefore send to the relay machine's LAN IP on port `5005`.
+
+By default, the iPad's `left` role is published in the Dexter `index` field and
+the `right` role in `middle`. Remap them when needed:
+
+```bash
+python -m dexter_relay.server --ipad --ipad-left-finger thumb --ipad-right-finger index
+```
+
+Use `--ipad-bind` and `--ipad-port` to change the incoming iPad listener. The
+source validates protocol name/version, coordinate system, lifecycle state,
+session ID, and sequence number; duplicate and reordered packets are ignored.
+An `ended` or `cancelled` touch immediately clears its mapped finger.
+
+For compatibility, iPad XY values remain in each mapped finger's existing
+`force` vector field. Frames explicitly set `transport` to `ipad`,
+`measurement_kind` to `position`, and `units` to `cm`, so consumers must not
+interpret those vectors as Newtons. Unmapped Dexter fingers report
+`has_data: false`.
+
 By default the relay binds UDP `0.0.0.0:45678`, publishes at 20 Hz, downsamples BLE input to the same rate, and forgets clients that stop renewing their subscription for 5 seconds. The default bind address is network-visible, so clients on other machines can subscribe using the server machine's IP address.
 
 On Windows, `45678/udp` is intentionally unprivileged, below the usual Windows dynamic port range, and away from common service ports. Windows Defender Firewall may still prompt the first time Python accepts inbound UDP; allow it on the intended private network.
@@ -99,6 +130,8 @@ The server replies with `ack` and then sends `force` frames:
   "sequence": 42,
   "timestamp": 1783500000.123,
   "transport": "serial",
+  "measurement_kind": "force",
+  "units": "N",
   "fingers": {
     "thumb": {
       "raw": [1, 2, 3, 4],
@@ -113,6 +146,10 @@ The server replies with `ack` and then sends `force` frames:
 ```
 
 BLE 3-channel readings produce `[x, y]` in Newtons, matching `DexterController.Visualizer` (`data[f].ToForce3()` and `FingerForces[f].AddForce(force.X, force.Y)`). Serial 4-channel readings are also supported for the Python controller's explicit serial mapping and produce `[x, y, z]`.
+
+In `--ipad` mode, the mapped `force` vectors contain `[x, y]` target offsets in
+centimeters for backward compatibility. Check the frame-level
+`measurement_kind` and `units` fields before labeling or scaling a vector.
 
 ## Visualizer reference
 

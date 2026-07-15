@@ -7,9 +7,11 @@ import socket
 import time
 from typing import Any
 
+from .ipad_source import IPAD_DEFAULT_PORT, IpadTouchSource
 from .port_util import bind_udp_socket
 from .protocol import (
     DEFAULT_UDP_PORT,
+    FINGER_NAMES,
     MAX_DATAGRAM_BYTES,
     PROTOCOL_VERSION,
     decode_datagram,
@@ -157,6 +159,8 @@ class UdpRelayServer:
             "sequence": self._sequence,
             "timestamp": snapshot["timestamp"],
             "transport": snapshot["transport"],
+            "measurement_kind": snapshot.get("measurement_kind", "force"),
+            "units": snapshot.get("units", "N"),
             "fingers": snapshot["fingers"],
             "status": snapshot["status"],
         }
@@ -213,6 +217,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="read serial load-cell devices described by --map",
     )
     parser.add_argument(
+        "--ipad",
+        action="store_true",
+        help="receive Dexter Touch position packets instead of opening Dexter hardware",
+    )
+    parser.add_argument(
+        "--ipad-bind",
+        default="0.0.0.0",
+        help="interface for incoming iPad UDP packets",
+    )
+    parser.add_argument(
+        "--ipad-port",
+        type=int,
+        default=IPAD_DEFAULT_PORT,
+        help="UDP port for incoming iPad packets",
+    )
+    parser.add_argument(
+        "--ipad-left-finger",
+        choices=FINGER_NAMES,
+        default="index",
+        help="Dexter finger field that receives the iPad left role",
+    )
+    parser.add_argument(
+        "--ipad-right-finger",
+        choices=FINGER_NAMES,
+        default="middle",
+        help="Dexter finger field that receives the iPad right role",
+    )
+    parser.add_argument(
         "--ble-scan-timeout",
         type=float,
         default=5.0,
@@ -251,14 +283,39 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.simulate:
+    explicit_modes = [
+        name
+        for name in ("ble", "serial", "ipad", "simulate")
+        if getattr(args, name)
+    ]
+    if len(explicit_modes) > 1:
+        parser.error(
+            "--ble, --serial, --ipad, and --simulate are mutually exclusive"
+        )
+    if args.map and (args.ble or args.ipad or args.simulate):
+        parser.error("--map is only valid with serial mode")
+
+    if args.ipad:
+        if args.ipad_left_finger == args.ipad_right_finger:
+            parser.error("iPad left and right roles must map to different fingers")
+        if not 1 <= args.ipad_port <= 65_535:
+            parser.error("--ipad-port must be between 1 and 65535")
+        if args.ipad_port == args.port:
+            parser.error("--ipad-port must differ from the relay --port")
+        try:
+            source: ForceSource = IpadTouchSource(
+                bind_host=args.ipad_bind,
+                port=args.ipad_port,
+                role_mapping={
+                    "left": args.ipad_left_finger,
+                    "right": args.ipad_right_finger,
+                },
+            )
+        except Exception as exc:
+            parser.exit(2, f"error: {exc}\n")
+    elif args.simulate:
         source: ForceSource = SimulatedForceSource(channels=args.simulate_channels)
     else:
-        if args.ble and args.serial:
-            parser.error("--ble and --serial cannot be used together")
-        if args.ble and args.map:
-            parser.error("--map is for serial mode and cannot be used with --ble")
-
         use_ble = args.ble or (not args.serial and not args.map)
         if args.serial and not args.map:
             parser.error("--serial requires at least one --map PORT:finger[,finger]")

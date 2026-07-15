@@ -29,6 +29,18 @@ For local Unity testing without Dexter hardware:
 python -m dexter_relay.server --simulate
 ```
 
+To drive the same receiver with target-relative iPad positions instead, run:
+
+```bash
+python -m dexter_relay.server --ipad
+```
+
+The iPad sends to UDP `5005`; Unity still subscribes to the relay on UDP
+`45678`. In iPad mode, `LatestFrame.measurement_kind` is `position`,
+`LatestFrame.units` is `cm`, and the default left/right roles appear in the
+`Index`/`Middle` measurements. The `force` array name is retained for wire
+compatibility, so always use the frame units when displaying or scaling it.
+
 The relay binds `0.0.0.0:45678` by default, so Unity clients on other computers can subscribe using the relay machine's LAN IP address.
 
 ## Multiple Unity Clients
