@@ -40,6 +40,13 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.13-8_cp313.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - pypi: ./
+      - pypi: https://files.pythonhosted.org/packages/07/bc/587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/4a/bc/255c29531dc7226085133bf276d62039954ed7ce9caa720050f810cb13c4/dexter_controller-0.2.2-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/6a/34/6b272e6df60be1aa4d575aa30220175a52c002a649c951d9950bfa3a72d6/dbus_fast-5.0.22-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/88/c4/e47e5a3feb378f6cab28bf836be7df97090a2f5c31e8a9ce8f9c9b283a30/harp_serial-0.4.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/94/28/b72807a781454ab47b2af6c4f0317348689d845d0a69d684bae26f23bfb7/harp_protocol-0.4.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/99/fe/22aec895f040c1e457d6e6fcc79286fbb17d54602600ab2a58837bec7be1/bleak-2.1.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/d4/6e/5918dc56a09f230f926a6489360407a1a7e3af168578cd6bdd8f49d33f8d/harp_loadcells-0.1.0a4-py3-none-any.whl
       win-64:
       - conda: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.6.17-h4c7d964_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.13-8_cp313.conda
@@ -682,6 +689,11 @@ packages:
   - winrt-windows-foundation-collections[all]~=3.2.1.0 ; extra == 'all'
   - winrt-windows-storage-streams[all]~=3.2.1.0 ; extra == 'all'
   requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/6a/34/6b272e6df60be1aa4d575aa30220175a52c002a649c951d9950bfa3a72d6/dbus_fast-5.0.22-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+  name: dbus-fast
+  version: 5.0.22
+  sha256: 979761985fe343c701f2b7575285d6e370123f7231d4656209ef7824bb686bbb
+  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/70/de/f30daaaa0e6f4edb6bd7ddb3e058bd453c9ad90c032a4545c4d4639338aa/winrt_windows_devices_enumeration-3.2.1-cp313-cp313-win_amd64.whl
   name: winrt-windows-devices-enumeration
   version: 3.2.1

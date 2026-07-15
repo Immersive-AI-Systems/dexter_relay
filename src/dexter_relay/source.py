@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from .ble_support import (
     diagnose_ble_failure,
+    discover_dexter_adapter_sync,
     prepare_dexter_ble_sync,
 )
 from .conversion import compose_force, signed_int16_values
@@ -115,6 +117,7 @@ def _connect_ble_device(
     scan_timeout: float,
     retries: int,
     ble_address: str | None = None,
+    ble_adapter: str | None = None,
 ):
     """Connect to Dexter over BLE, retrying when advertising is intermittent."""
 
@@ -127,6 +130,22 @@ def _connect_ble_device(
         ble_address=ble_address,
         discovery_timeout=scan_timeout,
     )
+    resolved_adapter = ble_adapter
+    if (
+        resolved_address is not None
+        and sys.platform.startswith("linux")
+        and ble_adapter == "auto"
+    ):
+        resolved_adapter = discover_dexter_adapter_sync(
+            address=resolved_address,
+            discovery_timeout=scan_timeout,
+        )
+        if resolved_adapter is None:
+            raise RuntimeError(
+                "Dexter is not advertising on any available Bluetooth adapter; "
+                "power-cycle Dexter and try again"
+            )
+        print(f"Using Bluetooth adapter {resolved_adapter} for Dexter")
 
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
@@ -139,6 +158,7 @@ def _connect_ble_device(
             device = RelayBLELoadCellDevice(
                 scan_timeout=scan_timeout,
                 ble_address=resolved_address or ble_address,
+                ble_adapter=resolved_adapter,
             )
             return device
         except Exception as exc:
@@ -180,7 +200,11 @@ class DexterForceSource:
         ble_scan_timeout: float = 5.0,
         ble_connect_retries: int = 3,
         ble_address: str | None = None,
+        ble_adapter: str | None = None,
         ble_sample_hz: float | None = None,
+        ble_stale_timeout: float = 3.0,
+        ble_reconnect_initial_delay: float = 1.0,
+        ble_reconnect_max_delay: float = 30.0,
     ) -> None:
         self.transport = "ble" if use_ble else "serial"
         self._controller = None
@@ -192,12 +216,35 @@ class DexterForceSource:
         self._ble_counter: int | None = None
         self._ble_timestamp_us: int | None = None
         self._ble_sample_sequence = 0
+        self._ble_connection_state = "connecting" if use_ble else "disabled"
+        self._ble_reconnect_count = 0
+        self._ble_last_error: str | None = None
+        self._ble_last_event_monotonic = time.monotonic()
+        self._ble_next_reconnect_monotonic = 0.0
         self._ble_lock = threading.Lock()
         self._ble_stop_event = threading.Event()
         self._ble_sampler_thread: threading.Thread | None = None
         if ble_sample_hz is not None and ble_sample_hz <= 0:
             raise ValueError("ble_sample_hz must be greater than 0")
+        if ble_stale_timeout <= 0:
+            raise ValueError("ble_stale_timeout must be greater than 0")
+        if ble_reconnect_initial_delay <= 0:
+            raise ValueError("ble_reconnect_initial_delay must be greater than 0")
+        if ble_reconnect_max_delay < ble_reconnect_initial_delay:
+            raise ValueError(
+                "ble_reconnect_max_delay must be at least the initial delay"
+            )
         self._ble_sample_hz = ble_sample_hz
+        self._ble_stale_timeout = ble_stale_timeout
+        self._ble_reconnect_initial_delay = ble_reconnect_initial_delay
+        self._ble_reconnect_max_delay = ble_reconnect_max_delay
+        self._ble_reconnect_delay = ble_reconnect_initial_delay
+        self._ble_connect_args = {
+            "scan_timeout": ble_scan_timeout,
+            "retries": ble_connect_retries,
+            "ble_address": ble_address,
+            "ble_adapter": ble_adapter,
+        }
 
         if use_ble:
             try:
@@ -208,10 +255,10 @@ class DexterForceSource:
                 ) from exc
 
             self._device = _connect_ble_device(
-                scan_timeout=ble_scan_timeout,
-                retries=ble_connect_retries,
-                ble_address=ble_address,
+                **self._ble_connect_args,
             )
+            self._ble_connection_state = "connected"
+            self._ble_last_event_monotonic = time.monotonic()
             if self._ble_sample_hz is not None:
                 self._ble_sampler_thread = threading.Thread(
                     target=self._ble_sampler_loop,
@@ -290,6 +337,10 @@ class DexterForceSource:
             ble_timestamp_us = self._ble_timestamp_us
             ble_sample_hz = self._ble_sample_hz
             ble_sample_sequence = self._ble_sample_sequence
+            ble_connection_state = self._ble_connection_state
+            ble_reconnect_count = self._ble_reconnect_count
+            ble_last_error = self._ble_last_error
+            ble_last_event_monotonic = self._ble_last_event_monotonic
 
         identifier = getattr(self._device, "identifier", "BLE:Dexter")
         return {
@@ -311,6 +362,12 @@ class DexterForceSource:
                     "timestamp_us": ble_timestamp_us,
                     "sample_hz": ble_sample_hz,
                     "sample_sequence": ble_sample_sequence,
+                    "connection_state": ble_connection_state,
+                    "reconnect_count": ble_reconnect_count,
+                    "last_error": ble_last_error,
+                    "last_sample_age_s": max(
+                        0.0, time.monotonic() - ble_last_event_monotonic
+                    ),
                     "finger_order": "DexterController.Visualizer",
                 },
             },
@@ -340,16 +397,74 @@ class DexterForceSource:
             now_mono = time.monotonic()
             if now_mono >= next_tick:
                 if self._accept_latest_ble_event(time.time()):
-                    next_tick += interval_s
-                    if next_tick < now_mono:
-                        next_tick = now_mono + interval_s
+                    with self._ble_lock:
+                        self._ble_last_event_monotonic = now_mono
+                        self._ble_connection_state = "connected"
+                        self._ble_last_error = None
+                    self._ble_reconnect_delay = self._ble_reconnect_initial_delay
+                elif now_mono - self._ble_last_event_monotonic >= self._ble_stale_timeout:
+                    self._maybe_reconnect_ble(now_mono)
 
-            sleep_for = min(0.001, max(0.0, next_tick - time.monotonic()))
+                next_tick += interval_s
+                if next_tick < now_mono:
+                    next_tick = now_mono + interval_s
+
+            sleep_for = min(0.01, max(0.0, next_tick - time.monotonic()))
             if sleep_for:
-                time.sleep(sleep_for)
+                self._ble_stop_event.wait(sleep_for)
+
+    def _maybe_reconnect_ble(self, now_mono: float) -> bool:
+        if now_mono < self._ble_next_reconnect_monotonic:
+            return False
+
+        with self._ble_lock:
+            self._ble_connection_state = "reconnecting"
+
+        old_device = self._device
+        self._device = None
+        if old_device is not None:
+            try:
+                old_device.close()
+            except Exception as exc:
+                print(f"warning: failed closing stale Dexter BLE connection: {exc}")
+
+        if self._ble_stop_event.is_set():
+            return False
+
+        print("Dexter BLE samples stopped; attempting automatic reconnect...")
+        reconnect_args = dict(self._ble_connect_args)
+        reconnect_args["retries"] = 1
+        try:
+            self._device = _connect_ble_device(**reconnect_args)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            with self._ble_lock:
+                self._ble_connection_state = "disconnected"
+                self._ble_last_error = error
+            delay = self._ble_reconnect_delay
+            self._ble_next_reconnect_monotonic = time.monotonic() + delay
+            self._ble_reconnect_delay = min(
+                self._ble_reconnect_max_delay,
+                max(delay * 2.0, self._ble_reconnect_initial_delay),
+            )
+            print(f"Dexter BLE reconnect failed; retrying in {delay:g}s: {error}")
+            return False
+
+        with self._ble_lock:
+            self._ble_connection_state = "connected"
+            self._ble_last_error = None
+            self._ble_reconnect_count += 1
+            self._ble_last_event_monotonic = time.monotonic()
+        self._ble_next_reconnect_monotonic = 0.0
+        self._ble_reconnect_delay = self._ble_reconnect_initial_delay
+        print("Dexter BLE reconnected successfully")
+        return True
 
     def _accept_latest_ble_event(self, now: float) -> bool:
-        events = list(self._device.get_events())
+        device = self._device
+        if device is None:
+            return False
+        events = list(device.get_events())
         if not events:
             return False
 

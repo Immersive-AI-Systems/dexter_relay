@@ -56,6 +56,38 @@ python -m dexter_relay.client --host 127.0.0.1 --port 45678
 
 The client sends a UDP subscribe packet, receives the full stream, and prints the latest force values once per second. On Ctrl+C it sends a best-effort UDP `unsubscribe` packet so the relay can remove it immediately.
 
+## Record and replay data
+
+With the live relay running, record its 20 Hz force stream to a timestamped CSV:
+
+```bash
+dexter-relay-recorder --host 127.0.0.1 --output-dir recording
+```
+
+The recorder creates a file such as
+`recording/dexter_20260715_123456_123456.csv`. Press Ctrl+C to stop; the
+recorder closes the file and unsubscribes cleanly. Each CSV row preserves the
+complete force frame, including raw channels, converted forces, finger
+metadata, device status, and original timestamps.
+
+Replay a recording continuously at 20 Hz through the same UDP server:
+
+```bash
+python -m dexter_relay.server --playback-csv recording/dexter_20260715_123456_123456.csv
+```
+
+On the Ubuntu Dexter host, the launcher provides a shorter equivalent:
+
+```bash
+bash start_relay.sh --csv recording/dexter_20260715_123456_123456.csv
+```
+
+Playback loops back to the first CSV row after the final row. Existing terminal,
+Unity, and other UDP clients attach normally and receive the same finger
+measurement structure. Playback frames use `transport: "playback"`, and the
+original transport, timestamp, sequence, row index, and loop count are retained
+under `status.playback`.
+
 ## Unity Receiver Demo
 
 A minimal Unity receiver is included in [`unity_demo`](unity_demo/README.md). It is a drop-in asset folder with a single `DexterRelayUdpReceiver` component that subscribes to the relay, receives force frames, displays a simple on-screen overlay, and sends `unsubscribe` on shutdown.

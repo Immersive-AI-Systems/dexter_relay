@@ -22,6 +22,7 @@ server = [
 [project.scripts]
 dexter-relay-server = "dexter_relay.server:main"
 dexter-relay-client = "dexter_relay.client:main"
+dexter-relay-recorder = "dexter_relay.recording:recorder_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -35,10 +36,9 @@ python = "3.13.*"
 
 [tool.pixi.pypi-dependencies]
 dexter-relay = { path = ".", editable = true }
-
-[tool.pixi.target.win-64.pypi-dependencies]
 dexter-controller = ">=0.2.2"
 
 [tool.pixi.tasks]
 dexter-relay-client = "python -m dexter_relay.client"
+dexter-relay-recorder = "python -m dexter_relay.recording"
 run-server = "python -m dexter_relay.server"

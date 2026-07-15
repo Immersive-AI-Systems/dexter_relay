@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Callable
@@ -194,6 +195,58 @@ async def release_windows_dexter_connection(address: str) -> bool:
     return was_connected
 
 
+async def release_linux_dexter_connection(address: str) -> bool:
+    """Disconnect a BlueZ session left behind by a crashed BLE client."""
+
+    if not sys.platform.startswith("linux"):
+        return False
+
+    def disconnect() -> bool:
+        try:
+            controllers_result = subprocess.run(
+                ["bluetoothctl", "list"],
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
+        controllers = re.findall(
+            r"^Controller\s+([0-9A-Fa-f:]{17})\b",
+            controllers_result.stdout,
+            flags=re.MULTILINE,
+        )
+        if not controllers:
+            controllers = [None]
+
+        for controller in controllers:
+            commands = []
+            if controller is not None:
+                commands.append(f"select {controller}")
+            commands.extend(
+                [f"disconnect {normalize_ble_address(address)}", "quit"]
+            )
+            try:
+                result = subprocess.run(
+                    ["bluetoothctl"],
+                    input="\n".join(commands) + "\n",
+                    capture_output=True,
+                    text=True,
+                    timeout=5.0,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                continue
+            output = f"{result.stdout}\n{result.stderr}".lower()
+            if "successful disconnected" in output:
+                return True
+        return False
+
+    return await asyncio.to_thread(disconnect)
+
+
 async def prepare_dexter_ble(
     *,
     ble_address: str | None,
@@ -212,9 +265,22 @@ async def prepare_dexter_ble(
         discovery_timeout=discovery_timeout,
     )
 
-    if address is not None and sys.platform == "win32":
-        if await release_windows_dexter_connection(address):
-            print(f"released Windows Bluetooth connection to Dexter at {address}")
+    if address is not None:
+        if sys.platform == "win32":
+            released = await release_windows_dexter_connection(address)
+            platform_name = "Windows"
+        elif sys.platform.startswith("linux"):
+            released = await release_linux_dexter_connection(address)
+            platform_name = "Linux"
+        else:
+            released = False
+            platform_name = sys.platform
+
+        if released:
+            print(
+                f"released stale {platform_name} Bluetooth connection "
+                f"to Dexter at {address}"
+            )
             await asyncio.sleep(1.0)
 
     if address is not None:
@@ -231,6 +297,40 @@ def prepare_dexter_ble_sync(
     return asyncio.run(
         prepare_dexter_ble(
             ble_address=ble_address,
+            discovery_timeout=discovery_timeout,
+        )
+    )
+
+
+async def discover_dexter_adapter(
+    *, address: str, discovery_timeout: float
+) -> str | None:
+    """Return the Linux HCI adapter that can currently see Dexter."""
+
+    if not sys.platform.startswith("linux"):
+        return None
+
+    from bleak import BleakScanner
+
+    normalized_address = normalize_ble_address(address)
+    adapters = sorted(path.name for path in Path("/sys/class/bluetooth").glob("hci*"))
+    for adapter in adapters:
+        device = await BleakScanner.find_device_by_filter(
+            lambda device, _: device.address.upper() == normalized_address,
+            timeout=discovery_timeout,
+            adapter=adapter,
+        )
+        if device is not None:
+            return adapter
+    return None
+
+
+def discover_dexter_adapter_sync(
+    *, address: str, discovery_timeout: float
+) -> str | None:
+    return asyncio.run(
+        discover_dexter_adapter(
+            address=address,
             discovery_timeout=discovery_timeout,
         )
     )
