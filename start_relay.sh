@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEXTER_ADDRESS="CA:2B:20:4E:8E:0D"
-
 if command -v dexter-relay-server >/dev/null 2>&1; then
   relay_command=(dexter-relay-server)
 else
@@ -32,20 +30,12 @@ if ! command -v bluetoothctl >/dev/null 2>&1; then
   exit 1
 fi
 
-# BlueZ can keep a BLE peripheral connected after its client crashes. Dexter
-# does not advertise while that stale connection exists, so release it before
-# the relay starts scanning. It is harmless if Dexter is already disconnected.
+# The relay releases stale BlueZ sessions itself, then scans every Linux HCI
+# adapter for the advertised Dexter name. Do not pin the randomized BLE address.
 bluetoothctl power on >/dev/null
-if bluetoothctl info "$DEXTER_ADDRESS" 2>/dev/null \
-  | grep -q 'Connected: yes'; then
-  echo "Releasing stale Bluetooth connection to Dexter..."
-  bluetoothctl disconnect "$DEXTER_ADDRESS" >/dev/null || true
-  sleep 2
-fi
 
 exec "${relay_command[@]}" \
   --ble \
-  --ble-address "$DEXTER_ADDRESS" \
   --ble-adapter auto \
   --ble-scan-timeout 10 \
   --ble-connect-retries 3 \

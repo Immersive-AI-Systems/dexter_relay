@@ -251,6 +251,7 @@ async def prepare_dexter_ble(
     *,
     ble_address: str | None,
     discovery_timeout: float = 3.0,
+    discover: bool = True,
 ) -> str | None:
     """Stop competing Dexter BLE users and release any Windows connection."""
 
@@ -260,10 +261,17 @@ async def prepare_dexter_ble(
     if killed:
         await asyncio.sleep(1.0)
 
-    address = await resolve_dexter_address(
-        ble_address=ble_address,
-        discovery_timeout=discovery_timeout,
-    )
+    if discover:
+        address = await resolve_dexter_address(
+            ble_address=ble_address,
+            discovery_timeout=discovery_timeout,
+        )
+    else:
+        address = (
+            normalize_ble_address(ble_address)
+            if ble_address
+            else read_cached_ble_address()
+        )
 
     if address is not None:
         if sys.platform == "win32":
@@ -293,43 +301,53 @@ def prepare_dexter_ble_sync(
     *,
     ble_address: str | None,
     discovery_timeout: float = 3.0,
+    discover: bool = True,
 ) -> str | None:
     return asyncio.run(
         prepare_dexter_ble(
             ble_address=ble_address,
             discovery_timeout=discovery_timeout,
+            discover=discover,
         )
     )
 
 
-async def discover_dexter_adapter(
-    *, address: str, discovery_timeout: float
-) -> str | None:
-    """Return the Linux HCI adapter that can currently see Dexter."""
+async def discover_dexter_endpoint(
+    *, address: str | None, discovery_timeout: float
+) -> tuple[str, str] | None:
+    """Return the Linux adapter and current address advertising as Dexter."""
 
     if not sys.platform.startswith("linux"):
         return None
 
     from bleak import BleakScanner
 
-    normalized_address = normalize_ble_address(address)
+    normalized_address = normalize_ble_address(address) if address else None
     adapters = sorted(path.name for path in Path("/sys/class/bluetooth").glob("hci*"))
     for adapter in adapters:
         device = await BleakScanner.find_device_by_filter(
-            lambda device, _: device.address.upper() == normalized_address,
+            lambda device, adv_data: (
+                "dexter" in (device.name or adv_data.local_name or "").lower()
+                or (
+                    normalized_address is not None
+                    and device.address.upper() == normalized_address
+                )
+            ),
             timeout=discovery_timeout,
             adapter=adapter,
         )
         if device is not None:
-            return adapter
+            current_address = normalize_ble_address(device.address)
+            write_cached_ble_address(current_address)
+            return adapter, current_address
     return None
 
 
-def discover_dexter_adapter_sync(
-    *, address: str, discovery_timeout: float
-) -> str | None:
+def discover_dexter_endpoint_sync(
+    *, address: str | None, discovery_timeout: float
+) -> tuple[str, str] | None:
     return asyncio.run(
-        discover_dexter_adapter(
+        discover_dexter_endpoint(
             address=address,
             discovery_timeout=discovery_timeout,
         )

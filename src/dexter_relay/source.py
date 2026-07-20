@@ -12,7 +12,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from .ble_support import (
     diagnose_ble_failure,
-    discover_dexter_adapter_sync,
+    discover_dexter_endpoint_sync,
     prepare_dexter_ble_sync,
 )
 from .conversion import compose_force, signed_int16_values
@@ -126,26 +126,28 @@ def _connect_ble_device(
     if retries < 1:
         raise ValueError("ble_connect_retries must be at least 1")
 
+    auto_adapter = sys.platform.startswith("linux") and ble_adapter == "auto"
     resolved_address = prepare_dexter_ble_sync(
         ble_address=ble_address,
         discovery_timeout=scan_timeout,
+        discover=not auto_adapter,
     )
     resolved_adapter = ble_adapter
-    if (
-        resolved_address is not None
-        and sys.platform.startswith("linux")
-        and ble_adapter == "auto"
-    ):
-        resolved_adapter = discover_dexter_adapter_sync(
-            address=resolved_address,
+    if auto_adapter:
+        endpoint = discover_dexter_endpoint_sync(
+            address=ble_address,
             discovery_timeout=scan_timeout,
         )
-        if resolved_adapter is None:
+        if endpoint is None:
             raise RuntimeError(
                 "Dexter is not advertising on any available Bluetooth adapter; "
                 "power-cycle Dexter and try again"
             )
-        print(f"Using Bluetooth adapter {resolved_adapter} for Dexter")
+        resolved_adapter, resolved_address = endpoint
+        print(
+            f"Using Bluetooth adapter {resolved_adapter} for Dexter "
+            f"at {resolved_address}"
+        )
 
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
