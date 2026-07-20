@@ -45,6 +45,15 @@ The relay listens for iPad protocol-v2 packets on `0.0.0.0:5005` and continues
 serving relay subscribers on `0.0.0.0:45678`. These are separate UDP ports. The
 iPad app should therefore send to the relay machine's LAN IP on port `5005`.
 
+By default, incoming iPad XY values are multiplied by `5` before they are sent
+to Unity, and the relay terminal prints one latest-value line per second showing
+both the original iPad coordinates and the scaled Unity coordinates. Override
+these defaults with `--ipad-scale` and `--ipad-print-interval` when needed:
+
+```bash
+python -m dexter_relay.server --ipad --ipad-scale 5 --ipad-print-interval 1
+```
+
 By default, the iPad's `left` role is published in the Dexter `index` field and
 the `right` role in `middle`. Remap them when needed:
 
@@ -147,9 +156,10 @@ The server replies with `ack` and then sends `force` frames:
 
 BLE 3-channel readings produce `[x, y]` in Newtons, matching `DexterController.Visualizer` (`data[f].ToForce3()` and `FingerForces[f].AddForce(force.X, force.Y)`). Serial 4-channel readings are also supported for the Python controller's explicit serial mapping and produce `[x, y, z]`.
 
-In `--ipad` mode, the mapped `force` vectors contain `[x, y]` target offsets in
-centimeters for backward compatibility. Check the frame-level
-`measurement_kind` and `units` fields before labeling or scaling a vector.
+In `--ipad` mode, the mapped `force` vectors contain the scaled `[x, y]` target
+offsets for backward compatibility. The default scale is `5`, and its value is
+also reported as `status.ipad.value_scale`. Check the frame-level
+`measurement_kind` and `units` fields before labeling the vector.
 
 ## Visualizer reference
 

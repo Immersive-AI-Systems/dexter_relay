@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import math
 import socket
 import time
 from typing import Any
 
-from .ipad_source import IPAD_DEFAULT_PORT, IpadTouchSource
+from .ipad_source import (
+    IPAD_DEFAULT_PORT,
+    IPAD_DEFAULT_PRINT_INTERVAL_S,
+    IPAD_DEFAULT_VALUE_SCALE,
+    IpadTouchSource,
+)
 from .port_util import bind_udp_socket
 from .protocol import (
     DEFAULT_UDP_PORT,
@@ -245,6 +251,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Dexter finger field that receives the iPad right role",
     )
     parser.add_argument(
+        "--ipad-scale",
+        type=float,
+        default=IPAD_DEFAULT_VALUE_SCALE,
+        help="multiplier applied to iPad XY values before forwarding to Unity",
+    )
+    parser.add_argument(
+        "--ipad-print-interval",
+        type=float,
+        default=IPAD_DEFAULT_PRINT_INTERVAL_S,
+        help="seconds between iPad value lines printed in the relay terminal",
+    )
+    parser.add_argument(
         "--ble-scan-timeout",
         type=float,
         default=5.0,
@@ -302,6 +320,10 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--ipad-port must be between 1 and 65535")
         if args.ipad_port == args.port:
             parser.error("--ipad-port must differ from the relay --port")
+        if not math.isfinite(args.ipad_scale):
+            parser.error("--ipad-scale must be finite")
+        if args.ipad_print_interval <= 0:
+            parser.error("--ipad-print-interval must be greater than 0")
         try:
             source: ForceSource = IpadTouchSource(
                 bind_host=args.ipad_bind,
@@ -310,6 +332,8 @@ def main(argv: list[str] | None = None) -> int:
                     "left": args.ipad_left_finger,
                     "right": args.ipad_right_finger,
                 },
+                value_scale=args.ipad_scale,
+                print_interval_s=args.ipad_print_interval,
             )
         except Exception as exc:
             parser.exit(2, f"error: {exc}\n")

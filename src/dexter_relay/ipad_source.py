@@ -16,6 +16,8 @@ IPAD_PROTOCOL_NAME = "ipad-dexter-touch"
 IPAD_PROTOCOL_VERSION = 2
 IPAD_COORDINATE_SYSTEM = "target-offset-centimeters"
 IPAD_DEFAULT_PORT = 5005
+IPAD_DEFAULT_VALUE_SCALE = 5.0
+IPAD_DEFAULT_PRINT_INTERVAL_S = 1.0
 IPAD_ROLES = ("left", "right")
 IPAD_PACKET_EVENTS = frozenset({"began", "moved", "ended", "cancelled"})
 IPAD_TOUCH_STATES = IPAD_PACKET_EVENTS | {"stationary"}
@@ -156,9 +158,15 @@ class IpadTouchSource:
         bind_host: str = "0.0.0.0",
         port: int = IPAD_DEFAULT_PORT,
         role_mapping: Mapping[str, str] | None = None,
+        value_scale: float = IPAD_DEFAULT_VALUE_SCALE,
+        print_interval_s: float | None = IPAD_DEFAULT_PRINT_INTERVAL_S,
     ) -> None:
         if not 0 <= port <= 65_535:
             raise ValueError("ipad port must be between 0 and 65535")
+        if not math.isfinite(value_scale):
+            raise ValueError("ipad value scale must be finite")
+        if print_interval_s is not None and print_interval_s <= 0:
+            raise ValueError("ipad print interval must be greater than 0")
 
         mapping = dict(role_mapping or {"left": "index", "right": "middle"})
         if set(mapping) != set(IPAD_ROLES):
@@ -171,6 +179,8 @@ class IpadTouchSource:
         self.bind_host = bind_host
         self.port = int(port)
         self.role_mapping = mapping
+        self.value_scale = float(value_scale)
+        self.print_interval_s = print_interval_s
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -192,6 +202,8 @@ class IpadTouchSource:
         self._accepted = 0
         self._invalid = 0
         self._out_of_order = 0
+        self._last_print_monotonic = 0.0
+        self._last_printed_sequence: int | None = None
 
     @property
     def address(self) -> tuple[str, int]:
@@ -200,6 +212,7 @@ class IpadTouchSource:
 
     def read_snapshot(self) -> dict[str, Any]:
         self._drain_datagrams()
+        self._maybe_print_values(time.monotonic())
         now = time.time()
         role_by_finger = {finger: role for role, finger in self.role_mapping.items()}
         fingers: dict[str, dict[str, Any]] = {}
@@ -210,7 +223,11 @@ class IpadTouchSource:
             has_data = bool(touch is not None and touch.active)
             measurement: dict[str, Any] = {
                 "raw": [],
-                "force": [touch.x, touch.y] if touch is not None else [],
+                "force": (
+                    [touch.x * self.value_scale, touch.y * self.value_scale]
+                    if touch is not None
+                    else []
+                ),
                 "channels": 2 if role is not None else 0,
                 "has_data": has_data,
                 "last_update_ts": touch.last_update_ts if touch is not None else 0.0,
@@ -262,6 +279,7 @@ class IpadTouchSource:
                     "protocol": IPAD_PROTOCOL_NAME,
                     "version": IPAD_PROTOCOL_VERSION,
                     "coordinate_system": IPAD_COORDINATE_SYSTEM,
+                    "value_scale": self.value_scale,
                     "listen_host": self.address[0],
                     "listen_port": self.address[1],
                     "role_mapping": dict(self.role_mapping),
@@ -277,6 +295,31 @@ class IpadTouchSource:
                 },
             },
         }
+
+    def _maybe_print_values(self, now_monotonic: float) -> None:
+        if self.print_interval_s is None or self._source_sequence is None:
+            return
+        if self._source_sequence == self._last_printed_sequence:
+            return
+        if now_monotonic - self._last_print_monotonic < self.print_interval_s:
+            return
+
+        values = []
+        for role in IPAD_ROLES:
+            touch = self._touches.get(role)
+            if touch is None:
+                values.append(f"{role}=waiting")
+                continue
+            scaled_x = touch.x * self.value_scale
+            scaled_y = touch.y * self.value_scale
+            values.append(
+                f"{role}=({touch.x:.3f}, {touch.y:.3f}) "
+                f"-> Unity=({scaled_x:.3f}, {scaled_y:.3f})"
+            )
+
+        print("iPad | " + " | ".join(values), flush=True)
+        self._last_print_monotonic = now_monotonic
+        self._last_printed_sequence = self._source_sequence
 
     def _drain_datagrams(self) -> None:
         while not self._closed:

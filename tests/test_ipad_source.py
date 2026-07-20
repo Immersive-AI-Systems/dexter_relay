@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import socket
 import time
@@ -81,7 +83,9 @@ class DecodeIpadPacketTests(unittest.TestCase):
 
 class IpadTouchSourceTests(unittest.TestCase):
     def setUp(self):
-        self.source = IpadTouchSource(bind_host="127.0.0.1", port=0)
+        self.source = IpadTouchSource(
+            bind_host="127.0.0.1", port=0, print_interval_s=None
+        )
         self.sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def tearDown(self):
@@ -121,14 +125,15 @@ class IpadTouchSourceTests(unittest.TestCase):
         self.assertEqual(snapshot["transport"], "ipad")
         self.assertEqual(snapshot["measurement_kind"], "position")
         self.assertEqual(snapshot["units"], "cm")
-        self.assertEqual(snapshot["fingers"]["index"]["force"], [0.25, -0.5])
-        self.assertEqual(snapshot["fingers"]["middle"]["force"], [-0.75, 1.5])
+        self.assertEqual(snapshot["fingers"]["index"]["force"], [1.25, -2.5])
+        self.assertEqual(snapshot["fingers"]["middle"]["force"], [-3.75, 7.5])
         self.assertTrue(snapshot["fingers"]["index"]["has_data"])
         self.assertFalse(snapshot["fingers"]["thumb"]["has_data"])
         self.assertEqual(
             snapshot["status"]["ipad"]["role_mapping"],
             {"left": "index", "right": "middle"},
         )
+        self.assertEqual(snapshot["status"]["ipad"]["value_scale"], 5.0)
 
     def test_ended_touch_clears_only_its_mapped_finger(self):
         self.send(
@@ -167,7 +172,7 @@ class IpadTouchSourceTests(unittest.TestCase):
         self.send(packet(2, [touch("left", 1.0, 2.0, touch_id=1)]))
         snapshot = self.send(packet(2, [touch("left", 9.0, 9.0, touch_id=1)]))
 
-        self.assertEqual(snapshot["fingers"]["index"]["force"], [1.0, 2.0])
+        self.assertEqual(snapshot["fingers"]["index"]["force"], [5.0, 10.0])
         self.assertEqual(snapshot["status"]["ipad"]["accepted"], 1)
         self.assertEqual(snapshot["status"]["ipad"]["out_of_order"], 1)
 
@@ -203,7 +208,7 @@ class IpadTouchSourceTests(unittest.TestCase):
 
         self.assertEqual(snapshot["status"]["ipad"]["session_id"], "session-b")
         self.assertFalse(snapshot["fingers"]["index"]["has_data"])
-        self.assertEqual(snapshot["fingers"]["middle"]["force"], [3.0, 4.0])
+        self.assertEqual(snapshot["fingers"]["middle"]["force"], [15.0, 20.0])
         self.assertEqual(snapshot["status"]["ipad"]["out_of_order"], 1)
 
     def test_invalid_datagram_is_counted_and_ignored(self):
@@ -219,6 +224,28 @@ class IpadTouchSourceTests(unittest.TestCase):
                 port=0,
                 role_mapping={"left": "index", "right": "index"},
             )
+
+    def test_prints_raw_and_scaled_values_at_most_once_per_second(self):
+        source = IpadTouchSource(bind_host="127.0.0.1", port=0)
+        try:
+            source._apply_packet(
+                decode_ipad_packet(
+                    encode(packet(1, [touch("left", 0.25, -0.5, touch_id=7)]))
+                ),
+                ("127.0.0.1", 12345),
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                source._maybe_print_values(100.0)
+                source._maybe_print_values(100.5)
+
+            lines = output.getvalue().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertIn("left=(0.250, -0.500)", lines[0])
+            self.assertIn("Unity=(1.250, -2.500)", lines[0])
+            self.assertIn("right=waiting", lines[0])
+        finally:
+            source.close()
 
 
 if __name__ == "__main__":
