@@ -63,6 +63,26 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(looped["status"]["playback"]["loop_count"], 1)
         self.assertEqual(looped["status"]["playback"]["source_sequence"], 10)
         self.assertEqual(looped["fingers"]["thumb"]["age_s"], 0.0)
+        self.assertEqual(looped["measurement_kind"], "force")
+        self.assertEqual(looped["units"], "N")
+
+    def test_playback_can_hold_final_row(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recording.csv"
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS)
+                writer.writeheader()
+                write_frame_row(writer, sample_frame(1, 111))
+                write_frame_row(writer, sample_frame(2, 222))
+
+            source = CsvPlaybackSource(path, loop=False)
+            source.read_snapshot()
+            final = source.read_snapshot()
+            held = source.read_snapshot()
+
+        self.assertEqual(final["fingers"]["thumb"]["raw"][0], 222)
+        self.assertEqual(held["fingers"]["thumb"]["raw"][0], 222)
+        self.assertFalse(held["status"]["playback"]["loop"])
 
     def test_empty_recording_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

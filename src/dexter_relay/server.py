@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import argparse
+import math
 import socket
 import time
+from pathlib import Path
 from typing import Any
 
+from .ipad_source import (
+    IPAD_DEFAULT_PORT,
+    IPAD_DEFAULT_PRINT_INTERVAL_S,
+    IPAD_DEFAULT_VALUE_SCALE,
+    IpadTouchSource,
+)
 from .port_util import bind_udp_socket
 from .recording import CsvPlaybackSource
 from .protocol import (
     DEFAULT_UDP_PORT,
+    FINGER_NAMES,
     MAX_DATAGRAM_BYTES,
     PROTOCOL_VERSION,
     decode_datagram,
@@ -18,11 +27,13 @@ from .protocol import (
     is_subscribe_packet,
     is_unsubscribe_packet,
 )
+from .recording_source import RecordingForceSource
 from .source import DexterForceSource, ForceSource, SimulatedForceSource
 
 
 _RECV_TIMEOUT_S = 0.01
 _SEND_BUFFER_BYTES = 256 * 1024
+SOURCE_CHOICES = ("ble", "serial", "ipad", "recording", "simulation")
 
 
 class UdpRelayServer:
@@ -158,6 +169,8 @@ class UdpRelayServer:
             "sequence": self._sequence,
             "timestamp": snapshot["timestamp"],
             "transport": snapshot["transport"],
+            "measurement_kind": snapshot.get("measurement_kind", "force"),
+            "units": snapshot.get("units", "N"),
             "fingers": snapshot["fingers"],
             "status": snapshot["status"],
         }
@@ -188,7 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--send-hz",
         type=float,
         default=20.0,
-        help="force-frame publish rate; in BLE mode also downsamples device samples to this rate",
+        help=(
+            "frame publish rate; also controls BLE downsampling and recording "
+            "playback rate"
+        ),
     )
     parser.add_argument(
         "--client-ttl",
@@ -197,21 +213,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds before an inactive UDP client is forgotten",
     )
     parser.add_argument(
+        "--source",
+        choices=SOURCE_CHOICES,
+        default="ble",
+        help="measurement source (default: ble)",
+    )
+    parser.add_argument(
         "--map",
         action="append",
         default=[],
         metavar="PORT:FINGER[,FINGER]",
-        help="serial port to finger mapping; repeat for multiple devices; implies serial mode",
+        help="serial port mapping used by --source serial; repeat for multiple devices",
     )
     parser.add_argument(
-        "--ble",
-        action="store_true",
-        help="read Dexter over BLE; this is the default when no --map is provided",
+        "--ipad-bind",
+        default="0.0.0.0",
+        help="interface for incoming iPad UDP packets",
     )
     parser.add_argument(
-        "--serial",
-        action="store_true",
-        help="read serial load-cell devices described by --map",
+        "--ipad-port",
+        type=int,
+        default=IPAD_DEFAULT_PORT,
+        help="UDP port for incoming iPad packets",
+    )
+    parser.add_argument(
+        "--ipad-left-finger",
+        choices=FINGER_NAMES,
+        default="index",
+        help="Dexter finger field that receives the iPad left role",
+    )
+    parser.add_argument(
+        "--ipad-right-finger",
+        choices=FINGER_NAMES,
+        default="middle",
+        help="Dexter finger field that receives the iPad right role",
+    )
+    parser.add_argument(
+        "--ipad-scale",
+        type=float,
+        default=IPAD_DEFAULT_VALUE_SCALE,
+        help="multiplier applied to iPad XY values before forwarding to Unity",
+    )
+    parser.add_argument(
+        "--ipad-print-interval",
+        type=float,
+        default=IPAD_DEFAULT_PRINT_INTERVAL_S,
+        help="seconds between iPad value lines printed in the relay terminal",
     )
     parser.add_argument(
         "--ble-scan-timeout",
@@ -260,99 +307,130 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum seconds between automatic BLE reconnect attempts",
     )
     parser.add_argument(
-        "--simulate",
-        action="store_true",
-        help="publish generated measurements instead of opening Dexter hardware",
-    )
-    parser.add_argument(
-        "--playback-csv",
-        default=None,
+        "--recording",
+        type=Path,
         metavar="PATH",
-        help="loop a Dexter recording CSV at 20 Hz instead of opening hardware",
+        help="CSV, JSON, or JSON Lines file used by --source recording",
     )
     parser.add_argument(
-        "--simulate-channels",
+        "--recording-loop",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="loop recording playback",
+    )
+    parser.add_argument(
+        "--simulation-channels",
         type=int,
         choices=(3, 4),
         default=4,
-        help="raw channel width used by --simulate",
+        help="raw channel width used by --source simulation",
     )
     return parser
+
+
+def _create_source(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> ForceSource:
+    if args.map and args.source != "serial":
+        parser.error("--map is only valid with --source serial")
+    if args.source == "serial" and not args.map:
+        parser.error(
+            "--source serial requires at least one --map PORT:finger[,finger]"
+        )
+    if args.recording is not None and args.source != "recording":
+        parser.error("--recording is only valid with --source recording")
+    if args.source == "recording" and args.recording is None:
+        parser.error("--source recording requires --recording PATH")
+
+    if args.source == "ble":
+        if args.ble_stale_timeout <= 0:
+            parser.error("--ble-stale-timeout must be greater than 0")
+        if args.ble_reconnect_initial_delay <= 0:
+            parser.error("--ble-reconnect-initial-delay must be greater than 0")
+        if args.ble_reconnect_max_delay < args.ble_reconnect_initial_delay:
+            parser.error(
+                "--ble-reconnect-max-delay must be at least "
+                "--ble-reconnect-initial-delay"
+            )
+
+    if args.source == "ipad":
+        if args.ipad_left_finger == args.ipad_right_finger:
+            parser.error("iPad left and right roles must map to different fingers")
+        if not 1 <= args.ipad_port <= 65_535:
+            parser.error("--ipad-port must be between 1 and 65535")
+        if args.ipad_port == args.port:
+            parser.error("--ipad-port must differ from the relay --port")
+        if not math.isfinite(args.ipad_scale):
+            parser.error("--ipad-scale must be finite")
+        if args.ipad_print_interval <= 0:
+            parser.error("--ipad-print-interval must be greater than 0")
+        try:
+            return IpadTouchSource(
+                bind_host=args.ipad_bind,
+                port=args.ipad_port,
+                role_mapping={
+                    "left": args.ipad_left_finger,
+                    "right": args.ipad_right_finger,
+                },
+                value_scale=args.ipad_scale,
+                print_interval_s=args.ipad_print_interval,
+            )
+        except Exception as exc:
+            parser.exit(2, f"error: {exc}\n")
+    if args.source == "recording":
+        try:
+            if args.recording.suffix.lower() == ".csv":
+                return CsvPlaybackSource(args.recording, loop=args.recording_loop)
+            return RecordingForceSource(args.recording, loop=args.recording_loop)
+        except Exception as exc:
+            parser.exit(2, f"error: {exc}\n")
+    if args.source == "simulation":
+        return SimulatedForceSource(channels=args.simulation_channels)
+
+    source_kwargs = {
+        "mapping_specs": args.map,
+        "use_ble": args.source == "ble",
+        "ble_scan_timeout": args.ble_scan_timeout,
+        "ble_connect_retries": args.ble_connect_retries,
+        "ble_address": args.ble_address,
+        "ble_adapter": args.ble_adapter,
+        "ble_sample_hz": args.send_hz if args.source == "ble" else None,
+        "ble_stale_timeout": args.ble_stale_timeout,
+        "ble_reconnect_initial_delay": args.ble_reconnect_initial_delay,
+        "ble_reconnect_max_delay": args.ble_reconnect_max_delay,
+    }
+    if args.source == "serial":
+        try:
+            return DexterForceSource(**source_kwargs)
+        except Exception as exc:
+            parser.exit(2, f"error: {exc}\n")
+
+    reconnect_delay = args.ble_reconnect_initial_delay
+    while True:
+        try:
+            return DexterForceSource(**source_kwargs)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            print(
+                f"Dexter BLE startup failed; retrying in "
+                f"{reconnect_delay:g}s: {type(exc).__name__}: {exc}"
+            )
+            time.sleep(reconnect_delay)
+            reconnect_delay = min(
+                args.ble_reconnect_max_delay,
+                reconnect_delay * 2.0,
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-
-    if args.ble_stale_timeout <= 0:
-        parser.error("--ble-stale-timeout must be greater than 0")
-    if args.ble_reconnect_initial_delay <= 0:
-        parser.error("--ble-reconnect-initial-delay must be greater than 0")
-    if args.ble_reconnect_max_delay < args.ble_reconnect_initial_delay:
-        parser.error(
-            "--ble-reconnect-max-delay must be at least "
-            "--ble-reconnect-initial-delay"
-        )
-
-    if args.playback_csv:
-        if args.simulate or args.ble or args.serial or args.map:
-            parser.error(
-                "--playback-csv cannot be combined with --simulate, --ble, "
-                "--serial, or --map"
-            )
-        if args.send_hz != 20.0:
-            parser.error("CSV playback requires --send-hz 20")
-        try:
-            source = CsvPlaybackSource(args.playback_csv)
-        except ValueError as exc:
-            parser.exit(2, f"error: {exc}\n")
-    elif args.simulate:
-        source: ForceSource = SimulatedForceSource(channels=args.simulate_channels)
-    else:
-        if args.ble and args.serial:
-            parser.error("--ble and --serial cannot be used together")
-        if args.ble and args.map:
-            parser.error("--map is for serial mode and cannot be used with --ble")
-
-        use_ble = args.ble or (not args.serial and not args.map)
-        if args.serial and not args.map:
-            parser.error("--serial requires at least one --map PORT:finger[,finger]")
-
-        reconnect_delay = args.ble_reconnect_initial_delay
-        while True:
-            try:
-                source = DexterForceSource(
-                    mapping_specs=args.map,
-                    use_ble=use_ble,
-                    ble_scan_timeout=args.ble_scan_timeout,
-                    ble_connect_retries=args.ble_connect_retries,
-                    ble_address=args.ble_address,
-                    ble_adapter=args.ble_adapter,
-                    ble_sample_hz=args.send_hz if use_ble else None,
-                    ble_stale_timeout=args.ble_stale_timeout,
-                    ble_reconnect_initial_delay=args.ble_reconnect_initial_delay,
-                    ble_reconnect_max_delay=args.ble_reconnect_max_delay,
-                )
-                break
-            except KeyboardInterrupt:
-                print("\nrelay stopped")
-                return 130
-            except Exception as exc:
-                if not use_ble:
-                    parser.exit(2, f"error: {exc}\n")
-                print(
-                    f"Dexter BLE startup failed; retrying in "
-                    f"{reconnect_delay:g}s: {type(exc).__name__}: {exc}"
-                )
-                try:
-                    time.sleep(reconnect_delay)
-                except KeyboardInterrupt:
-                    print("\nrelay stopped")
-                    return 130
-                reconnect_delay = min(
-                    args.ble_reconnect_max_delay,
-                    reconnect_delay * 2.0,
-                )
+    try:
+        source = _create_source(args, parser)
+    except KeyboardInterrupt:
+        print("\nrelay stopped")
+        return 130
 
     server = UdpRelayServer(
         source=source,

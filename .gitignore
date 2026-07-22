@@ -219,3 +219,34 @@ __marimo__/
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+
+# macOS and Xcode user state
+.DS_Store
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+*.xccheckout
+*.xcscmblueprint
+
+# Swift and Xcode build products
+DerivedData/
+.build/
+.swiftpm/xcode/package.xcworkspace/
+*.hmap
+*.ipa
+*.app
+*.framework
+*.dSYM/
+*.dSYM.zip
+*.xcarchive/
+*.xcresult/
+*.swiftmodule
+*.swiftdoc
+*.swiftsourceinfo
+*.o
+
+# Xcode playground and temporary files
+*.moved-aside
+*.playground/timeline.xctimeline
+*.playground/playground.xcworkspace
+/work/

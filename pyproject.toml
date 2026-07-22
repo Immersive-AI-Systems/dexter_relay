@@ -16,7 +16,7 @@ dependencies = []
 
 [project.optional-dependencies]
 server = [
-  "dexter-controller",
+  "dexter-controller>=0.2.2",
 ]
 
 [project.scripts]

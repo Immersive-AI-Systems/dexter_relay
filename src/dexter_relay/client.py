@@ -58,10 +58,13 @@ def format_vector(values: Sequence[float]) -> str:
 
 def format_frame(frame: dict[str, Any], *, show_raw: bool = False) -> str:
     timestamp = datetime.fromtimestamp(float(frame["timestamp"])).strftime("%H:%M:%S")
+    measurement_kind = str(frame.get("measurement_kind", "force"))
+    units = str(frame.get("units", "N"))
     parts = [
         f"{timestamp}",
         f"seq={frame.get('sequence')}",
         f"transport={frame.get('transport')}",
+        f"measurement={measurement_kind}",
     ]
     fingers = frame.get("fingers", {})
 
@@ -72,7 +75,7 @@ def format_frame(frame: dict[str, Any], *, show_raw: bool = False) -> str:
             continue
 
         force = measurement.get("force", ())
-        text = f"{name}={format_vector(force)} N"
+        text = f"{name}={format_vector(force)} {units}"
         if show_raw:
             text += f" raw={measurement.get('raw', [])}"
         parts.append(text)

@@ -13,7 +13,8 @@ if [[ $# -gt 0 ]]; then
     exit 2
   fi
   exec "${relay_command[@]}" \
-    --playback-csv "$2" \
+    --source recording \
+    --recording "$2" \
     --send-hz 20 \
     --bind 0.0.0.0 \
     --port 45678
@@ -35,7 +36,7 @@ fi
 bluetoothctl power on >/dev/null
 
 exec "${relay_command[@]}" \
-  --ble \
+  --source ble \
   --ble-adapter auto \
   --ble-scan-timeout 10 \
   --ble-connect-retries 3 \

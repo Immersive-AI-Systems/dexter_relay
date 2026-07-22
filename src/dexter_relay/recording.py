@@ -23,7 +23,7 @@ from .protocol import (
 )
 
 
-CSV_COLUMNS = (
+REQUIRED_CSV_COLUMNS = (
     "recorded_at",
     "source_timestamp",
     "sequence",
@@ -31,6 +31,7 @@ CSV_COLUMNS = (
     "fingers_json",
     "status_json",
 )
+CSV_COLUMNS = REQUIRED_CSV_COLUMNS + ("measurement_kind", "units")
 
 
 def recording_path(output_dir: str | Path, now: datetime | None = None) -> Path:
@@ -52,6 +53,8 @@ def frame_to_csv_row(
         "status_json": json.dumps(
             frame.get("status", {}), separators=(",", ":"), sort_keys=True
         ),
+        "measurement_kind": str(frame.get("measurement_kind", "force")),
+        "units": str(frame.get("units", "N")),
     }
 
 
@@ -66,9 +69,10 @@ class CsvPlaybackSource:
 
     transport = "playback"
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, loop: bool = True) -> None:
         self.path = Path(path).expanduser().resolve()
         self._rows = self._read_rows(self.path)
+        self.loop = bool(loop)
         self._index = 0
         self._loop_count = 0
         self._playback_sequence = 0
@@ -83,7 +87,7 @@ class CsvPlaybackSource:
 
         with handle:
             reader = csv.DictReader(handle)
-            missing = set(CSV_COLUMNS) - set(reader.fieldnames or ())
+            missing = set(REQUIRED_CSV_COLUMNS) - set(reader.fieldnames or ())
             if missing:
                 raise ValueError(
                     f"playback CSV is missing columns: {', '.join(sorted(missing))}"
@@ -112,6 +116,8 @@ class CsvPlaybackSource:
                         "source_timestamp": source_timestamp,
                         "sequence": sequence,
                         "transport": row["transport"],
+                        "measurement_kind": row.get("measurement_kind") or "force",
+                        "units": row.get("units") or "N",
                         "fingers": fingers,
                         "status": status,
                     }
@@ -124,8 +130,9 @@ class CsvPlaybackSource:
     def read_snapshot(self) -> dict[str, Any]:
         row = self._rows[self._index]
         row_index = self._index
-        self._index += 1
-        if self._index >= len(self._rows):
+        if self._index + 1 < len(self._rows):
+            self._index += 1
+        elif self.loop:
             self._index = 0
             self._loop_count += 1
 
@@ -142,6 +149,7 @@ class CsvPlaybackSource:
             "csv_path": str(self.path),
             "row_index": row_index,
             "row_count": len(self._rows),
+            "loop": self.loop,
             "loop_count": self._loop_count,
             "recorded_at": row["recorded_at"],
             "source_timestamp": row["source_timestamp"],
@@ -153,6 +161,8 @@ class CsvPlaybackSource:
         return {
             "transport": self.transport,
             "timestamp": now,
+            "measurement_kind": row["measurement_kind"],
+            "units": row["units"],
             "fingers": fingers,
             "status": status,
         }
