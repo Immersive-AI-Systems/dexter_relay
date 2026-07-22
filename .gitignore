@@ -250,3 +250,7 @@ DerivedData/
 *.playground/timeline.xctimeline
 *.playground/playground.xcworkspace
 /work/
+
+# Local Dexter measurement recordings
+/recording/
+/recoding/
