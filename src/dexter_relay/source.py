@@ -378,7 +378,7 @@ class SimulatedForceSource:
         if channels not in (3, 4):
             raise ValueError("channels must be 3 or 4")
         self.channels = channels
-        self.transport = f"simulate-{channels}ch"
+        self.transport = f"simulation-{channels}ch"
         self._start = time.monotonic()
 
     def read_snapshot(self) -> dict[str, Any]:

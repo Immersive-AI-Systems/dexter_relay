@@ -6,6 +6,7 @@ import argparse
 import math
 import socket
 import time
+from pathlib import Path
 from typing import Any
 
 from .ipad_source import (
@@ -25,11 +26,13 @@ from .protocol import (
     is_subscribe_packet,
     is_unsubscribe_packet,
 )
+from .recording_source import RecordingForceSource
 from .source import DexterForceSource, ForceSource, SimulatedForceSource
 
 
 _RECV_TIMEOUT_S = 0.01
 _SEND_BUFFER_BYTES = 256 * 1024
+SOURCE_CHOICES = ("ble", "serial", "ipad", "recording", "simulation")
 
 
 class UdpRelayServer:
@@ -197,7 +200,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--send-hz",
         type=float,
         default=20.0,
-        help="force-frame publish rate; in BLE mode also downsamples device samples to this rate",
+        help=(
+            "frame publish rate; also controls BLE downsampling and recording "
+            "playback rate"
+        ),
     )
     parser.add_argument(
         "--client-ttl",
@@ -206,26 +212,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds before an inactive UDP client is forgotten",
     )
     parser.add_argument(
+        "--source",
+        choices=SOURCE_CHOICES,
+        default="ble",
+        help="measurement source (default: ble)",
+    )
+    parser.add_argument(
         "--map",
         action="append",
         default=[],
         metavar="PORT:FINGER[,FINGER]",
-        help="serial port to finger mapping; repeat for multiple devices; implies serial mode",
-    )
-    parser.add_argument(
-        "--ble",
-        action="store_true",
-        help="read Dexter over BLE; this is the default when no --map is provided",
-    )
-    parser.add_argument(
-        "--serial",
-        action="store_true",
-        help="read serial load-cell devices described by --map",
-    )
-    parser.add_argument(
-        "--ipad",
-        action="store_true",
-        help="receive Dexter Touch position packets instead of opening Dexter hardware",
+        help="serial port mapping used by --source serial; repeat for multiple devices",
     )
     parser.add_argument(
         "--ipad-bind",
@@ -283,37 +280,42 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--simulate",
-        action="store_true",
-        help="publish generated measurements instead of opening Dexter hardware",
+        "--recording",
+        type=Path,
+        metavar="PATH",
+        help="JSON or JSON Lines recording used by --source recording",
     )
     parser.add_argument(
-        "--simulate-channels",
+        "--recording-loop",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="loop recording playback",
+    )
+    parser.add_argument(
+        "--simulation-channels",
         type=int,
         choices=(3, 4),
         default=4,
-        help="raw channel width used by --simulate",
+        help="raw channel width used by --source simulation",
     )
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    explicit_modes = [
-        name
-        for name in ("ble", "serial", "ipad", "simulate")
-        if getattr(args, name)
-    ]
-    if len(explicit_modes) > 1:
+def _create_source(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> ForceSource:
+    if args.map and args.source != "serial":
+        parser.error("--map is only valid with --source serial")
+    if args.source == "serial" and not args.map:
         parser.error(
-            "--ble, --serial, --ipad, and --simulate are mutually exclusive"
+            "--source serial requires at least one --map PORT:finger[,finger]"
         )
-    if args.map and (args.ble or args.ipad or args.simulate):
-        parser.error("--map is only valid with serial mode")
+    if args.recording is not None and args.source != "recording":
+        parser.error("--recording is only valid with --source recording")
+    if args.source == "recording" and args.recording is None:
+        parser.error("--source recording requires --recording PATH")
 
-    if args.ipad:
+    if args.source == "ipad":
         if args.ipad_left_finger == args.ipad_right_finger:
             parser.error("iPad left and right roles must map to different fingers")
         if not 1 <= args.ipad_port <= 65_535:
@@ -325,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.ipad_print_interval <= 0:
             parser.error("--ipad-print-interval must be greater than 0")
         try:
-            source: ForceSource = IpadTouchSource(
+            return IpadTouchSource(
                 bind_host=args.ipad_bind,
                 port=args.ipad_port,
                 role_mapping={
@@ -337,24 +339,32 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception as exc:
             parser.exit(2, f"error: {exc}\n")
-    elif args.simulate:
-        source: ForceSource = SimulatedForceSource(channels=args.simulate_channels)
-    else:
-        use_ble = args.ble or (not args.serial and not args.map)
-        if args.serial and not args.map:
-            parser.error("--serial requires at least one --map PORT:finger[,finger]")
-
+    if args.source == "recording":
         try:
-            source = DexterForceSource(
-                mapping_specs=args.map,
-                use_ble=use_ble,
-                ble_scan_timeout=args.ble_scan_timeout,
-                ble_connect_retries=args.ble_connect_retries,
-                ble_address=args.ble_address,
-                ble_sample_hz=args.send_hz if use_ble else None,
-            )
+            return RecordingForceSource(args.recording, loop=args.recording_loop)
         except Exception as exc:
             parser.exit(2, f"error: {exc}\n")
+    if args.source == "simulation":
+        return SimulatedForceSource(channels=args.simulation_channels)
+
+    use_ble = args.source == "ble"
+    try:
+        return DexterForceSource(
+            mapping_specs=args.map,
+            use_ble=use_ble,
+            ble_scan_timeout=args.ble_scan_timeout,
+            ble_connect_retries=args.ble_connect_retries,
+            ble_address=args.ble_address,
+            ble_sample_hz=args.send_hz if use_ble else None,
+        )
+    except Exception as exc:
+        parser.exit(2, f"error: {exc}\n")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    source = _create_source(args, parser)
 
     server = UdpRelayServer(
         source=source,

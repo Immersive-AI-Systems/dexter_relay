@@ -26,13 +26,13 @@ python -m dexter_relay.server
 For local Unity testing without Dexter hardware:
 
 ```bash
-python -m dexter_relay.server --simulate
+python -m dexter_relay.server --source simulation
 ```
 
 To drive the same receiver with target-relative iPad positions instead, run:
 
 ```bash
-python -m dexter_relay.server --ipad
+python -m dexter_relay.server --source ipad
 ```
 
 The iPad sends to UDP `5005`; Unity still subscribes to the relay on UDP

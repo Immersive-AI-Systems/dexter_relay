@@ -1,45 +1,66 @@
 # dexter-relay
 
-`dexter-relay` reads Dexter load-cell data through the `dexter_controller` Python package, converts raw channel values to force vectors using the same path as the .NET visualizer, and publishes the latest measurements to any number of UDP clients.
-
-This is pure Python. The .NET visualizer is used only as a reference source for porting the math and BLE finger ordering; no .NET runtime, assemblies, commands, or packages are used by this project. The real Dexter Python dependency is loaded only by the relay server. Local tests for conversion and protocol code do not require hardware.
+`dexter-relay` is a Python UDP server for sharing Dexter finger measurements over a network. It can read Dexter hardware over BLE or serial, receive calibrated two-finger XY positions from an iPad, replay recorded relay frames, or generate simulated measurements. Every source is published through the same protocol to multiple subscribed terminal, Unity, or custom clients.
 
 ## Install
+
+For the terminal client and the iPad, recording, or simulation sources:
 
 ```bash
 python -m pip install -e .
 ```
 
-This also installs `dexter-controller` directly from `github.com/fchampalimaud/dexter-controller`, using the `python/dexter-controller` package subdirectory.
+For the Dexter hardware relay server:
 
-## Run the relay
+```bash
+python -m pip install -e ".[server]"
+```
 
-The default server mode is BLE, matching the .NET visualizer's all-five-finger 3-channel path:
+The `server` extra installs `dexter-controller>=0.2.2` from public PyPI. There are no install-time dependencies on local checkouts or private GitHub URLs.
+
+## Source types
+
+Select the input with `--source`. Available sources are `ble`, `serial`, `ipad`,
+`recording`, and `simulation`; the default is `ble`.
+
+### BLE (default)
+
+BLE reads three load-cell channels from each of the five Dexter fingers. These
+two commands are equivalent:
 
 ```bash
 python -m dexter_relay.server
 ```
 
-You can also pass `--ble` explicitly:
-
 ```bash
-python -m dexter_relay.server --ble
+python -m dexter_relay.server --source ble
 ```
 
-Serial devices use one `--map PORT:finger[,finger]` entry per load-cell device:
+Use `--ble-address`, `--ble-scan-timeout`, and `--ble-connect-retries` when the
+default discovery behavior needs adjustment.
+
+### Serial
+
+Serial uses `dexter_controller.DexterHandController`. Provide one
+`--map PORT:finger[,finger]` entry per load-cell device; each serial device can
+serve at most two fingers:
 
 ```bash
-python -m dexter_relay.server --serial --map COM20:thumb,index --map COM5:middle,ring --map COM8:pinky
+python -m dexter_relay.server --source serial --map COM20:thumb,index --map COM5:middle,ring --map COM8:pinky
 ```
 
-### iPad touch input
+### iPad
 
-Use `--ipad` to receive target-relative XY positions from the Dexter Touch iPad
-app instead of opening Dexter BLE or serial hardware:
+The iPad source receives target-relative XY positions from the Dexter Touch app
+instead of opening Dexter hardware:
 
 ```bash
-python -m dexter_relay.server --ipad
+python -m dexter_relay.server --source ipad
 ```
+
+The native Swift client and ready-to-open Xcode project are included in
+[`clients/ipad`](clients/ipad/README.md). Enter the relay machine's LAN IP and
+port `5005` in the app, then tap **Start Sending**.
 
 The relay listens for iPad protocol-v2 packets on `0.0.0.0:5005` and continues
 serving relay subscribers on `0.0.0.0:45678`. These are separate UDP ports. The
@@ -51,14 +72,14 @@ both the original iPad coordinates and the scaled Unity coordinates. Override
 these defaults with `--ipad-scale` and `--ipad-print-interval` when needed:
 
 ```bash
-python -m dexter_relay.server --ipad --ipad-scale 5 --ipad-print-interval 1
+python -m dexter_relay.server --source ipad --ipad-scale 5 --ipad-print-interval 1
 ```
 
 By default, the iPad's `left` role is published in the Dexter `index` field and
 the `right` role in `middle`. Remap them when needed:
 
 ```bash
-python -m dexter_relay.server --ipad --ipad-left-finger thumb --ipad-right-finger index
+python -m dexter_relay.server --source ipad --ipad-left-finger thumb --ipad-right-finger index
 ```
 
 Use `--ipad-bind` and `--ipad-port` to change the incoming iPad listener. The
@@ -72,7 +93,45 @@ For compatibility, iPad XY values remain in each mapped finger's existing
 interpret those vectors as Newtons. Unmapped Dexter fingers report
 `has_data: false`.
 
-By default the relay binds UDP `0.0.0.0:45678`, publishes at 20 Hz, downsamples BLE input to the same rate, and forgets clients that stop renewing their subscription for 5 seconds. The default bind address is network-visible, so clients on other machines can subscribe using the server machine's IP address.
+### Recording
+
+Recording playback requires a path:
+
+```bash
+python -m dexter_relay.server --source recording --recording recordings/session.jsonl
+```
+
+The file may contain one relay `force` frame per line, a JSON array of frames,
+or a JSON object with a `frames` array. Playback advances one frame per relay
+publish tick, controlled by `--send-hz` and defaulting to `20` frames per
+second. It loops by default; use `--no-recording-loop` to hold the final frame:
+
+```bash
+python -m dexter_relay.server --source recording --recording recordings/session.jsonl --no-recording-loop
+```
+
+Replayed frames use `transport: "recording"`. Their original transport,
+timestamp, sequence, path, and playback index are available under
+`status.recording`.
+
+### Simulation
+
+Simulation generates deterministic force waveforms without Dexter hardware:
+
+```bash
+python -m dexter_relay.server --source simulation
+```
+
+It produces four-channel measurements by default. Use
+`--simulation-channels 3` to exercise the three-channel conversion path.
+
+## Network behavior
+
+For every source, the relay binds UDP `0.0.0.0:45678`, publishes at `20 Hz`,
+and forgets clients that stop renewing their subscription for 5 seconds. BLE
+input is downsampled to the publish rate, while recording playback advances one
+frame per publish tick. The default bind address is network-visible, so clients
+on other machines can subscribe using the relay machine's LAN IP address.
 
 On Windows, `45678/udp` is intentionally unprivileged, below the usual Windows dynamic port range, and away from common service ports. Windows Defender Firewall may still prompt the first time Python accepts inbound UDP; allow it on the intended private network.
 
@@ -105,7 +164,7 @@ Use `127.0.0.1` when Unity runs on the relay machine. Use the relay machine's LA
 ## Local smoke test without hardware
 
 ```bash
-python -m dexter_relay.server --simulate
+python -m dexter_relay.server --source simulation
 ```
 
 Then start the client in another terminal:
@@ -154,22 +213,12 @@ The server replies with `ack` and then sends `force` frames:
 }
 ```
 
-BLE 3-channel readings produce `[x, y]` in Newtons, matching `DexterController.Visualizer` (`data[f].ToForce3()` and `FingerForces[f].AddForce(force.X, force.Y)`). Serial 4-channel readings are also supported for the Python controller's explicit serial mapping and produce `[x, y, z]`.
+BLE 3-channel readings produce `[x, y]` force vectors in Newtons. Serial 4-channel readings are also supported for the Python controller's explicit serial mapping and produce `[x, y, z]`.
 
-In `--ipad` mode, the mapped `force` vectors contain the scaled `[x, y]` target
-offsets for backward compatibility. The default scale is `5`, and its value is
-also reported as `status.ipad.value_scale`. Check the frame-level
+With `--source ipad`, the mapped `force` vectors contain the scaled `[x, y]`
+target offsets for backward compatibility. The default scale is `5`, and its
+value is also reported as `status.ipad.value_scale`. Check the frame-level
 `measurement_kind` and `units` fields before labeling the vector.
-
-## Visualizer reference
-
-The relay follows `/Users/nova/git/dexter-controller/dotnet/DexterController.Visualizer`:
-
-- `MainWindowViewModel.OnDataUpdated` treats each finger as 3 raw channels.
-- The visualizer computes force with `data[f].ToForce3()` and displays `force.X` / `force.Y`.
-- `ToForce3()` delegates to `DexterController.Measurements.ForceConverter.ComposeForce3`, so this project ports that math exactly, including `raw[0] -> lc2`, `raw[1] -> lc3`, `raw[2] -> lc1`.
-- BLE payload finger slicing follows `DexterController.BLE.DexterHandController.OnPayloadReceived`: `thumb=payload[12:15]`, `index=payload[9:12]`, `middle=payload[6:9]`, `ring=payload[3:6]`, `pinky=payload[0:3]`.
-- Raw samples are interpreted as signed Int16 values, matching `FingerData.AsInt16()` in the .NET code.
 
 ## Tests
 
